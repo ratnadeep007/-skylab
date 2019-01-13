@@ -1,0 +1,6 @@
+services:
+  - angular:
+      build: testing
+      run: true
+      port: 8080
+      cmd: ['http-server', './dist/testing']
