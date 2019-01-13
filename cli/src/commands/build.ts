@@ -7,6 +7,11 @@ const Docker = require('dockerode')
 const docker = new Docker({ socketPath: '/var/run/docker.sock' })
 const path = require('path')
 const cliSpinners = require('cli-spinners')
+const low = require('lowdb')
+const FileSync = require('lowdb/adapters/FileSync')
+
+const adapter = new FileSync('db.json')
+const db = low(adapter)
 import checkLang from '../modules/checkLang'
 
 
@@ -14,7 +19,8 @@ export default class Build extends Command {
   static description = 'Build images declared in Skyfile'
 
   static examples = [
-    '$ sky build'
+    `$ sky build
+Builds from local Skyfile`
   ]
 
   static flags = {
@@ -37,6 +43,7 @@ export default class Build extends Command {
       src: ['.']
     }, {t: serviceName + '-image'}, function (error: any, response: any) {
       if (error) {
+        spinnerDocker.fail('Failed to create image'.red)
         return console.error(error)
       }
       response.on('data', (res: any) => {
@@ -45,6 +52,8 @@ export default class Build extends Command {
       })
       response.on('end', function () {
         spinnerDocker.succeed('Image build done'.green);
+        // db.set('service.isImageBuild', true).write()
+        db.get('service').find({ name:serviceName}).assign({isImageBuild: true}).write()
         if (doRun) {
           runContainer(folderName, serviceName, context)
         }
@@ -55,7 +64,9 @@ export default class Build extends Command {
 
 
   async run() {
-    const {args, flags} = this.parse(Build)
+    const { args, flags } = this.parse(Build)
+    db.defaults({ service: [], count: 0 })
+      .write()
     if (flags.file === '.') {
       try {
         const file = fs.readFileSync(__dirname + '/../Skyfile.yml')
@@ -77,6 +88,7 @@ export default class Build extends Command {
             ExposedPorts: port,
             Cmd: cmd
           }
+          db.get('service').push({name: serviceName}).write()
           this.createImage(folderName, serviceName, needToRun, context)
         })
       } catch (err) {
@@ -103,16 +115,24 @@ function runContainer(folderName: any, serviceName: any, context: any) {
       }
     },
     ExposedPorts: {
-    }
+    },
+    name: serviceName,
   }
   createOptions['HostConfig']['PortBindings'][portBindings] = [{ HostPort: `${context.ExposedPorts}` }]
   createOptions['ExposedPorts'][exposedPorts] = {}
-  docker.run(serviceName + '-image', context.Cmd, process.stdout, createOptions)
-    .then(function (container: any) {
-      console.log('container data', container)
-      spinnerDocker.succeed('Container started'.green)
-    }).catch(function (err: any) {
-      spinnerDocker.fail('Fail to start container'.red)
-      console.log(err)
-    })
+  docker.run(serviceName + '-image', context.Cmd, process.stdout, createOptions, function (err: any, data: any, container: any) {
+    if (err) {
+      spinnerDocker.fail('Failed to start cotnainer'.red)
+      // db.set('service.isContainerRunning', false).write()
+      db.get('service').find({ name:serviceName}).assign({isContainerRunning: false}).write()
+      return console.error(err)
+    }
+  }).on('container', function (container: any) {
+    spinnerDocker.succeed('Container started'.green)
+    // db.set('service.isContainerRunning', true).write()
+    // db.set('service.containerId', container.id).write()
+    db.get('service').find({ name: serviceName }).assign({ isContainerRunning: true }).write()
+    db.get('service').find({ name:serviceName}).assign({containerID: container.id}).write()
+    return ''
+  })
 }
